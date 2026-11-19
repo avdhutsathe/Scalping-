@@ -6,11 +6,9 @@ import ta
 import time
 from datetime import datetime
 
-# पेज सेटअप
 st.set_page_config(page_title="9/21 EMA Scalping Algo - Zerodha", layout="wide")
 st.title("⚡ 9 & 21 EMA Multi-Index Scalping Algo (NIFTY | BANKNIFTY | SENSEX)")
 
-# सेशन स्टेट इनिशियलायझेशन
 if "kite" not in st.session_state:
     st.session_state.kite = None
 if "access_token" not in st.session_state:
@@ -52,21 +50,19 @@ strike_preference = st.sidebar.selectbox("Strike Selection", ["1-Step ITM (Best 
 
 # --- MARKET DATA & STRATEGY ENGINE ---
 def get_market_regime(df):
-    """OI आणि Price वरून Short Covering, Long Unwinding किंवा Strong Trend ओळखणे"""
     price_change = df['close'].iloc[-1] - df['close'].iloc[-2]
     oi_change = df['oi'].iloc[-1] - df['oi'].iloc[-2]
 
     if price_change > 0 and oi_change < 0:
-        return "SHORT_COVERING", 5.0  # टार्गेट 1:5
+        return "SHORT_COVERING", 5.0
     elif price_change < 0 and oi_change < 0:
-        return "LONG_UNWINDING", 1.5  # छोटे व जलद टार्गेट 1:1.5
+        return "LONG_UNWINDING", 1.5
     elif df['adx'].iloc[-1] > 30:
-        return "STRONG_TREND", 2.5    # मजबूत ट्रेंड 1:2.5
+        return "STRONG_TREND", 2.5
     else:
-        return "NORMAL_TREND", 1.5    # सामान्य स्कॅल्पिंग 1:1.5
+        return "NORMAL_TREND", 1.5
 
 def analyze_index(df, index_name):
-    """9/21 EMA + ADX + Volume 20 MA + OI तपासणी"""
     df['ema9'] = ta.trend.ema_indicator(df['close'], window=9)
     df['ema21'] = ta.trend.ema_indicator(df['close'], window=21)
     df['adx'] = ta.trend.adx(df['high'], df['low'], df['close'], window=14)
@@ -75,18 +71,15 @@ def analyze_index(df, index_name):
     curr = df.iloc[-1]
     prev = df.iloc[-2]
 
-    # Sideways Filter (ADX 20 पेक्षा कमी असल्यास ट्रेड टाळा)
     if curr['adx'] < 20:
         return None
 
-    # Volume Confirmation (Volume 20 MA पेक्षा जास्त हवा)
     if curr['volume'] <= curr['vol_ma20']:
         return None
 
     regime, rr_ratio = get_market_regime(df)
     signal_strength = curr['adx'] + (curr['volume'] / curr['vol_ma20']) * 10
 
-    # Bullish Pullback Setup (CALL BUY)
     if curr['ema9'] > curr['ema21']:
         touched_ema = (prev['low'] <= prev['ema9']) or (curr['low'] <= curr['ema9'])
         bullish_candle = curr['close'] > curr['open'] and curr['close'] > curr['ema9']
@@ -103,7 +96,6 @@ def analyze_index(df, index_name):
                 "adx": round(curr['adx'], 2)
             }
 
-    # Bearish Pullback Setup (PUT BUY)
     elif curr['ema9'] < curr['ema21']:
         touched_ema = (prev['high'] >= prev['ema9']) or (curr['high'] >= prev['ema9'])
         bearish_candle = curr['close'] < curr['open'] and curr['close'] < curr['ema9']
@@ -123,7 +115,6 @@ def analyze_index(df, index_name):
     return None
 
 def get_option_symbol(instruments_df, index_name, spot_price, option_type, pref):
-    """ATM किंवा 1-Step ITM स्ट्राइक निवडणे"""
     step = 50 if index_name == "NIFTY" else 100
     atm_strike = round(spot_price / step) * step
 
@@ -160,7 +151,6 @@ if run_algo:
             bfo_df = pd.DataFrame(kite.instruments("BFO"))
             all_inst = pd.concat([nfo_df, bfo_df], ignore_index=True)
 
-            # चालू महिन्याचे Futures Tokens मिळवणे
             indices = ["NIFTY", "BANKNIFTY", "SENSEX"]
             fut_tokens = {}
             for idx in indices:
@@ -172,7 +162,6 @@ if run_algo:
                 now = datetime.now().strftime("%H:%M:%S")
                 signals = []
 
-                # १. तिन्ही इंडेक्स स्कॅन करणे
                 to_date = datetime.now()
                 from_date = to_date - pd.Timedelta(days=2)
 
@@ -184,7 +173,6 @@ if run_algo:
                         if sig:
                             signals.append(sig)
 
-                # २. जर कोणताही ट्रेड चालू नसेल, तर सर्वात मजबूत सिग्नलमध्ये एन्ट्री घेणे
                 if st.session_state.active_trade is None and signals:
                     best_signal = max(signals, key=lambda x: x['strength'])
                     opt_type = "CE" if "CE" in best_signal['direction'] else "PE"
@@ -195,7 +183,6 @@ if run_algo:
                     ltp_data = kite.ltp(f"{exch}:{symbol}")
                     entry_price = ltp_data[f"{exch}:{symbol}"]['last_price']
 
-                    # Option प्रीमियमसाठी Delta नुसार SL आणि Target ठरवणे (Delta ~ 0.55)
                     opt_sl_pts = round(best_signal['sl_points'] * 0.55, 1)
                     opt_sl_pts = max(opt_sl_pts, 5.0)
                     sl_price = round(entry_price - opt_sl_pts, 1)
@@ -228,6 +215,23 @@ if run_algo:
                         f"🔥 NEW ENTRY ({best_signal['regime']}): {symbol} @ ₹{entry_price} | Target: ₹{target_price} | SL: ₹{sl_price}"
                     )
 
-                # ३. चालू ट्रेडचे Trailing Stop Loss आणि Target मॅनेज करणे
                 elif st.session_state.active_trade is not None:
-      
+                    tr = st.session_state.active_trade
+                    curr_ltp = kite.ltp(f"{tr['exchange']}:{tr['symbol']}")[f"{tr['exchange']}:{tr['symbol']}"]['last_price']
+
+                    if curr_ltp > tr['highest_price']:
+                        tr['highest_price'] = curr_ltp
+                        trail_gap = tr['initial_sl_pts'] * (0.6 if tr['regime'] in ["SHORT_COVERING", "STRONG_TREND"] else 0.8)
+                        new_sl = round(curr_ltp - trail_gap, 1)
+                        if new_sl > tr['sl']:
+                            tr['sl'] = new_sl
+
+                    exit_reason = None
+                    if curr_ltp >= tr['target']:
+                        exit_reason = "🎯 TARGET HIT"
+                    elif curr_ltp <= tr['sl']:
+                        exit_reason = "🛑 TRAILING SL HIT"
+
+                    if exit_reason:
+                        if trading_mode == "🔴 LIVE TRADING":
+                            
