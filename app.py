@@ -7,60 +7,54 @@ import time
 from datetime import datetime
 
 st.set_page_config(page_title="9/21 EMA Scalping Algo - Zerodha", layout="wide")
-st.title("⚡ 9 & 21 EMA Multi-Index Scalping Algo (NIFTY | BANKNIFTY | SENSEX)")
+st.title("⚡ 9 & 21 EMA Multi-Index Scalping Algo")
 
 if "kite" not in st.session_state:
     st.session_state.kite = None
-if "access_token" not in st.session_state:
-    st.session_state.access_token = None
 if "active_trade" not in st.session_state:
     st.session_state.active_trade = None
 if "trade_logs" not in st.session_state:
     st.session_state.trade_logs = []
 
-# --- SIDEBAR: ZERODHA LOGIN & SETTINGS ---
-st.sidebar.header("🔐 1. Zerodha Kite API Login")
+# --- SIDEBAR ---
+st.sidebar.header("🔐 1. Zerodha Kite Login")
 api_key = st.sidebar.text_input("API Key", type="password")
 api_secret = st.sidebar.text_input("API Secret", type="password")
 
 if api_key:
     kite_temp = KiteConnect(api_key=api_key)
-    login_url = kite_temp.login_url()
-    st.sidebar.markdown(f"[👉 येथे क्लिक करून Zerodha Login करा]({login_url})")
+    st.sidebar.markdown(f"[👉 येथे क्लिक करून Zerodha Login करा]({kite_temp.login_url()})")
 
-request_token = st.sidebar.text_input("URL मधील Request Token पेस्ट करा")
+request_token = st.sidebar.text_input("Request Token पेस्ट करा")
 
 if st.sidebar.button("Connect to Zerodha"):
     try:
         kite = KiteConnect(api_key=api_key)
         data = kite.generate_session(request_token, api_secret=api_secret)
-        st.session_state.kite = kite
-        st.session_state.access_token = data["access_token"]
         kite.set_access_token(data["access_token"])
+        st.session_state.kite = kite
         st.sidebar.success("✅ Zerodha यशस्वीरित्या कनेक्ट झाले!")
     except Exception as e:
         st.sidebar.error(f"❌ लॉगिन त्रुटी: {e}")
 
 st.sidebar.divider()
-st.sidebar.header("⚙️ 2. Trading Mode & Risk")
-trading_mode = st.sidebar.radio("Trading Mode निवडा:", ["🟡 PAPER TRADING", "🔴 LIVE TRADING"])
-lots = st.sidebar.number_input("Lots संख्या (प्रत्येक ट्रेडसाठी)", min_value=1, max_value=50, value=1)
-timeframe = st.sidebar.selectbox("Candle Timeframe", ["minute", "3minute"], index=0)
-strike_preference = st.sidebar.selectbox("Strike Selection", ["1-Step ITM (Best for Scalping)", "ATM (At-The-Money)"])
+st.sidebar.header("⚙️ 2. Settings")
+trading_mode = st.sidebar.radio("Mode निवडा:", ["🟡 PAPER TRADING", "🔴 LIVE TRADING"])
+lots = st.sidebar.number_input("Lots संख्या", min_value=1, max_value=50, value=1)
+timeframe = st.sidebar.selectbox("Timeframe", ["minute", "3minute"], index=0)
+strike_pref = st.sidebar.selectbox("Strike", ["1-Step ITM", "ATM"])
 
-# --- MARKET DATA & STRATEGY ENGINE ---
+# --- STRATEGY FUNCTIONS ---
 def get_market_regime(df):
-    price_change = df['close'].iloc[-1] - df['close'].iloc[-2]
-    oi_change = df['oi'].iloc[-1] - df['oi'].iloc[-2]
-
-    if price_change > 0 and oi_change < 0:
+    price_chg = df['close'].iloc[-1] - df['close'].iloc[-2]
+    oi_chg = df['oi'].iloc[-1] - df['oi'].iloc[-2]
+    if price_chg > 0 and oi_chg < 0:
         return "SHORT_COVERING", 5.0
-    elif price_change < 0 and oi_change < 0:
+    elif price_chg < 0 and oi_chg < 0:
         return "LONG_UNWINDING", 1.5
     elif df['adx'].iloc[-1] > 30:
         return "STRONG_TREND", 2.5
-    else:
-        return "NORMAL_TREND", 1.5
+    return "NORMAL_TREND", 1.5
 
 def analyze_index(df, index_name):
     df['ema9'] = ta.trend.ema_indicator(df['close'], window=9)
@@ -71,167 +65,111 @@ def analyze_index(df, index_name):
     curr = df.iloc[-1]
     prev = df.iloc[-2]
 
-    if curr['adx'] < 20:
-        return None
-
-    if curr['volume'] <= curr['vol_ma20']:
+    if curr['adx'] < 20 or curr['volume'] <= curr['vol_ma20']:
         return None
 
     regime, rr_ratio = get_market_regime(df)
-    signal_strength = curr['adx'] + (curr['volume'] / curr['vol_ma20']) * 10
+    strength = curr['adx'] + (curr['volume'] / curr['vol_ma20']) * 10
 
     if curr['ema9'] > curr['ema21']:
-        touched_ema = (prev['low'] <= prev['ema9']) or (curr['low'] <= curr['ema9'])
-        bullish_candle = curr['close'] > curr['open'] and curr['close'] > curr['ema9']
-        if touched_ema and bullish_candle:
-            sl_points = max(curr['close'] - curr['low'], 10)
-            return {
-                "index": index_name,
-                "direction": "CE (BUY)",
-                "price": curr['close'],
-                "sl_points": sl_points,
-                "rr_ratio": rr_ratio,
-                "regime": regime,
-                "strength": signal_strength,
-                "adx": round(curr['adx'], 2)
-            }
+        if (prev['low'] <= prev['ema9'] or curr['low'] <= curr['ema9']) and curr['close'] > curr['open'] and curr['close'] > curr['ema9']:
+            sl_pts = max(curr['close'] - curr['low'], 10)
+            return {"index": index_name, "dir": "CE", "price": curr['close'], "sl_pts": sl_pts, "rr": rr_ratio, "regime": regime, "strength": strength}
 
-    elif curr['ema9'] < curr['ema21']:
-        touched_ema = (prev['high'] >= prev['ema9']) or (curr['high'] >= prev['ema9'])
-        bearish_candle = curr['close'] < curr['open'] and curr['close'] < curr['ema9']
-        if touched_ema and bearish_candle:
-            sl_points = max(curr['high'] - curr['close'], 10)
-            return {
-                "index": index_name,
-                "direction": "PE (BUY)",
-                "price": curr['close'],
-                "sl_points": sl_points,
-                "rr_ratio": rr_ratio,
-                "regime": regime,
-                "strength": signal_strength,
-                "adx": round(curr['adx'], 2)
-            }
+    if curr['ema9'] < curr['ema21']:
+        if (prev['high'] >= prev['ema9'] or curr['high'] >= curr['ema9']) and curr['close'] < curr['open'] and curr['close'] < curr['ema9']:
+            sl_pts = max(curr['high'] - curr['close'], 10)
+            return {"index": index_name, "dir": "PE", "price": curr['close'], "sl_pts": sl_pts, "rr": rr_ratio, "regime": regime, "strength": strength}
 
     return None
 
-def get_option_symbol(instruments_df, index_name, spot_price, option_type, pref):
+def get_option_symbol(all_inst, index_name, spot_price, opt_type, pref):
     step = 50 if index_name == "NIFTY" else 100
-    atm_strike = round(spot_price / step) * step
+    atm = round(spot_price / step) * step
+    target_strike = (atm - step if opt_type == "CE" else atm + step) if pref == "1-Step ITM" else atm
+    opts = all_inst[(all_inst['name'] == index_name) & (all_inst['strike'] == target_strike) & (all_inst['instrument_type'] == opt_type)].sort_values('expiry')
+    row = opts.iloc
+    return row['tradingsymbol'], int(row['lot_size']), row['exchange']
 
-    if pref == "1-Step ITM (Best for Scalping)":
-        target_strike = atm_strike - step if option_type == "CE" else atm_strike + step
-    else:
-        target_strike = atm_strike
+# --- DASHBOARD ---
+c1, c2, c3 = st.columns(3)
+c1.metric("Mode", trading_mode)
+c2.metric("Active Trade", st.session_state.active_trade['symbol'] if st.session_state.active_trade else "None")
+c3.metric("Total Trades", len(st.session_state.trade_logs))
 
-    opts = instruments_df[
-        (instruments_df['name'] == index_name) &
-        (instruments_df['strike'] == target_strike) &
-        (instruments_df['instrument_type'] == option_type)
-    ].sort_values('expiry')
+run_algo = st.toggle("🚀 Start / Stop Algo Engine")
+status_box = st.empty()
 
-    first_opt = opts.iloc[0]
-    return first_opt['tradingsymbol'], int(first_opt['lot_size']), first_opt['exchange']
+if run_algo and not st.session_state.kite:
+    st.error("⚠️ कृपया आधी डाव्या बाजूला Zerodha Login करा!")
 
-# --- MAIN DASHBOARD UI ---
-col1, col2, col3 = st.columns(3)
-col1.metric("Current Mode", trading_mode)
-col2.metric("Active Trade", st.session_state.active_trade['symbol'] if st.session_state.active_trade else "कोणताही ट्रेड नाही")
-col3.metric("Total Trades Today", len(st.session_state.trade_logs))
+if run_algo and st.session_state.kite:
+    kite = st.session_state.kite
+    nfo = pd.DataFrame(kite.instruments("NFO"))
+    bfo = pd.DataFrame(kite.instruments("BFO"))
+    all_inst = pd.concat([nfo, bfo], ignore_index=True)
 
-run_algo = st.toggle("🚀 Start / Stop Auto-Scalping Engine")
-status_placeholder = st.empty()
+    fut_tokens = {}
+    for idx in ["NIFTY", "BANKNIFTY", "SENSEX"]:
+        futs = all_inst[(all_inst['name'] == idx) & (all_inst['instrument_type'] == 'FUT')].sort_values('expiry')
+        if not futs.empty:
+            fut_tokens[idx] = int(futs.iloc['instrument_token'])
 
-if run_algo:
-    if not st.session_state.kite:
-        st.error("⚠️ कृपया आधी डाव्या बाजूला Zerodha Kite Login करा!")
-    else:
-        kite = st.session_state.kite
-        try:
-            nfo_df = pd.DataFrame(kite.instruments("NFO"))
-            bfo_df = pd.DataFrame(kite.instruments("BFO"))
-            all_inst = pd.concat([nfo_df, bfo_df], ignore_index=True)
+    while run_algo:
+        now = datetime.now().strftime("%H:%M:%S")
+        signals = []
+        to_dt = datetime.now()
+        from_dt = to_dt - pd.Timedelta(days=2)
 
-            indices = ["NIFTY", "BANKNIFTY", "SENSEX"]
-            fut_tokens = {}
-            for idx in indices:
-                futs = all_inst[(all_inst['name'] == idx) & (all_inst['instrument_type'] == 'FUT')].sort_values('expiry')
-                if not futs.empty:
-                    fut_tokens[idx] = int(futs.iloc[0]['instrument_token'])
+        for idx, token in fut_tokens.items():
+            hist = kite.historical_data(token, from_dt, to_dt, timeframe, oi=True)
+            df_h = pd.DataFrame(hist)
+            if len(df_h) > 25:
+                sig = analyze_index(df_h, idx)
+                if sig:
+                    signals.append(sig)
 
-            while run_algo:
-                now = datetime.now().strftime("%H:%M:%S")
-                signals = []
+        if st.session_state.active_trade is None and signals:
+            best = max(signals, key=lambda x: x['strength'])
+            sym, lot_sz, exch = get_option_symbol(all_inst, best['index'], best['price'], best['dir'], strike_pref)
+            qty = lot_sz * lots
+            entry_p = kite.ltp(f"{exch}:{sym}")[f"{exch}:{sym}"]['last_price']
+            sl_pts = max(round(best['sl_pts'] * 0.55, 1), 5.0)
+            sl_p = round(entry_p - sl_pts, 1)
+            tgt_p = round(entry_p + (sl_pts * best['rr']), 1)
 
-                to_date = datetime.now()
-                from_date = to_date - pd.Timedelta(days=2)
+            if trading_mode == "🔴 LIVE TRADING":
+                kite.place_order(variety=kite.VARIETY_REGULAR, exchange=exch, tradingsymbol=sym, transaction_type=kite.TRANSACTION_TYPE_BUY, quantity=qty, product=kite.PRODUCT_MIS, order_type=kite.ORDER_TYPE_MARKET)
 
-                for idx, token in fut_tokens.items():
-                    hist = kite.historical_data(token, from_date, to_date, timeframe, oi=True)
-                    df_hist = pd.DataFrame(hist)
-                    if len(df_hist) > 25:
-                        sig = analyze_index(df_hist, idx)
-                        if sig:
-                            signals.append(sig)
+            st.session_state.active_trade = {"symbol": sym, "exchange": exch, "qty": qty, "entry": entry_p, "sl": sl_p, "sl_pts": sl_pts, "target": tgt_p, "regime": best['regime'], "high": entry_p}
+            status_box.success(f"🔥 ENTRY ({best['regime']}): {sym} @ ₹{entry_p} | Tgt: ₹{tgt_p} | SL: ₹{sl_p}")
 
-                if st.session_state.active_trade is None and signals:
-                    best_signal = max(signals, key=lambda x: x['strength'])
-                    opt_type = "CE" if "CE" in best_signal['direction'] else "PE"
-                    symbol, lot_size, exch = get_option_symbol(
-                        all_inst, best_signal['index'], best_signal['price'], opt_type, strike_preference
-                    )
-                    qty = lot_size * lots
-                    ltp_data = kite.ltp(f"{exch}:{symbol}")
-                    entry_price = ltp_data[f"{exch}:{symbol}"]['last_price']
+        elif st.session_state.active_trade is not None:
+            tr = st.session_state.active_trade
+            ltp = kite.ltp(f"{tr['exchange']}:{tr['symbol']}")[f"{tr['exchange']}:{tr['symbol']}"]['last_price']
 
-                    opt_sl_pts = round(best_signal['sl_points'] * 0.55, 1)
-                    opt_sl_pts = max(opt_sl_pts, 5.0)
-                    sl_price = round(entry_price - opt_sl_pts, 1)
-                    target_price = round(entry_price + (opt_sl_pts * best_signal['rr_ratio']), 1)
+            if ltp > tr['high']:
+                tr['high'] = ltp
+                gap = tr['sl_pts'] * (0.6 if tr['regime'] in ["SHORT_COVERING", "STRONG_TREND"] else 0.8)
+                new_sl = round(ltp - gap, 1)
+                if new_sl > tr['sl']:
+                    tr['sl'] = new_sl
 
-                    if trading_mode == "🔴 LIVE TRADING":
-                        kite.place_order(
-                            variety=kite.VARIETY_REGULAR,
-                            exchange=exch,
-                            tradingsymbol=symbol,
-                            transaction_type=kite.TRANSACTION_TYPE_BUY,
-                            quantity=qty,
-                            product=kite.PRODUCT_MIS,
-                            order_type=kite.ORDER_TYPE_MARKET
-                        )
+            reason = "🎯 TARGET HIT" if ltp >= tr['target'] else ("🛑 TRAILING SL HIT" if ltp <= tr['sl'] else None)
+            if reason:
+                if trading_mode == "🔴 LIVE TRADING":
+                    kite.place_order(variety=kite.VARIETY_REGULAR, exchange=tr['exchange'], tradingsymbol=tr['symbol'], transaction_type=kite.TRANSACTION_TYPE_SELL, quantity=tr['qty'], product=kite.PRODUCT_MIS, order_type=kite.ORDER_TYPE_MARKET)
+                pnl = round((ltp - tr['entry']) * tr['qty'], 2)
+                st.session_state.trade_logs.append({"Time": now, "Symbol": tr['symbol'], "Regime": tr['regime'], "Entry": tr['entry'], "Exit": ltp, "PnL": pnl, "Reason": reason})
+                st.session_state.active_trade = None
+                status_box.warning(f"{reason}: {tr['symbol']} @ ₹{ltp} | PnL: ₹{pnl}")
+            else:
+                status_box.info(f"⏳ {tr['symbol']} | LTP: ₹{ltp} | Trail SL: ₹{tr['sl']} | Tgt: ₹{tr['target']} ({tr['regime']})")
+        else:
+            status_box.write(f"🔍 [{now}] NIFTY, BANKNIFTY, SENSEX स्कॅन चालू आहे...")
 
-                    st.session_state.active_trade = {
-                        "symbol": symbol,
-                        "exchange": exch,
-                        "qty": qty,
-                        "entry": entry_price,
-                        "sl": sl_price,
-                        "initial_sl_pts": opt_sl_pts,
-                        "target": target_price,
-                        "regime": best_signal['regime'],
-                        "highest_price": entry_price,
-                        "time": now
-                    }
-                    status_placeholder.success(
-                        f"🔥 NEW ENTRY ({best_signal['regime']}): {symbol} @ ₹{entry_price} | Target: ₹{target_price} | SL: ₹{sl_price}"
-                    )
+        time.sleep(2)
 
-                elif st.session_state.active_trade is not None:
-                    tr = st.session_state.active_trade
-                    curr_ltp = kite.ltp(f"{tr['exchange']}:{tr['symbol']}")[f"{tr['exchange']}:{tr['symbol']}"]['last_price']
-
-                    if curr_ltp > tr['highest_price']:
-                        tr['highest_price'] = curr_ltp
-                        trail_gap = tr['initial_sl_pts'] * (0.6 if tr['regime'] in ["SHORT_COVERING", "STRONG_TREND"] else 0.8)
-                        new_sl = round(curr_ltp - trail_gap, 1)
-                        if new_sl > tr['sl']:
-                            tr['sl'] = new_sl
-
-                    exit_reason = None
-                    if curr_ltp >= tr['target']:
-                        exit_reason = "🎯 TARGET HIT"
-                    elif curr_ltp <= tr['sl']:
-                        exit_reason = "🛑 TRAILING SL HIT"
-
-                    if exit_reason:
-                        if trading_mode == "🔴 LIVE TRADING":
-                            
+if st.session_state.trade_logs:
+    st.subheader("📜 Trade Logs")
+    st.dataframe(pd.DataFrame(st.session_state.trade_logs), use_container_width=True)
